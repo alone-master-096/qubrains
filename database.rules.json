@@ -1,0 +1,145 @@
+{
+  "rules": {
+    // Deny by default. Every readable/writable path below is explicit.
+    ".read": false,
+    ".write": false,
+
+    // username -> uid index. Lets registration check availability in O(1)
+    // without letting anyone read other users' private data. Public read is
+    // safe here since a username is already public-facing.
+    "usernames": {
+      ".read": true,
+      "$username": {
+        ".write": "auth != null && !data.exists() && newData.isString() && newData.val() === auth.uid && root.child('users').child(auth.uid).child('username').val() === $username",
+        ".validate": "newData.isString()"
+      }
+    },
+
+    "users": {
+      "$uid": {
+        // Any signed-in user can read basic profiles (needed for chat lists,
+        // online users, search). No email or password ever lives here.
+        // Presence (online/lastSeen) lives in presence/{uid} instead — a
+        // blanket grant here would make it impossible to restrict lastSeen
+        // by privacy setting below, since RTD read rules only ever grant
+        // permissively down the tree, never restrict a deeper path once a
+        // shallower one already allows it.
+        ".read": "auth != null",
+        ".write": "auth != null && auth.uid === $uid",
+        ".validate": "newData.hasChildren(['username', 'displayName'])",
+        "username": {
+          // Locked once set. Renaming would need to atomically repoint the
+          // usernames/ index too, which the app doesn't support — see the
+          // matching note in services/users.js.
+          ".validate": "!data.exists() || newData.val() === data.val()"
+        },
+        "createdAt": {
+          ".validate": "!data.exists() || newData.val() === data.val()"
+        }
+      }
+    },
+
+    // Presence is split out of users/ so lastSeen can have its own,
+    // narrower read rule without a blanket parent grant overriding it.
+    // online has no "connections" tier to enforce (section 32 is a plain
+    // on/off), so it stays simple: broadly readable, with privacy handled
+    // at write time in presence.js instead.
+    "presence": {
+      ".indexOn": ["online"],
+      "$uid": {
+        ".write": "auth != null && auth.uid === $uid",
+        "online": {
+          ".read": "auth != null"
+        },
+        "lastSeen": {
+          ".read": "auth != null && (auth.uid === $uid || root.child('settings').child($uid).child('showLastSeen').val() === 'everyone' || (root.child('settings').child($uid).child('showLastSeen').val() === 'connections' && root.child('userConnections').child(auth.uid).child($uid).exists()))"
+        }
+      }
+    },
+
+    // uid -> true map of accepted connections. This is used by privacy
+    // checks such as lastSeen and is written after a request is accepted.
+    "userConnections": {
+      "$uid": {
+        ".read": "auth != null && auth.uid === $uid",
+        "$otherUid": {
+          ".write": "auth != null && (auth.uid === $uid || auth.uid === $otherUid) && (root.child('requests').child($uid).child($otherUid).child('status').val() === 'accepted' || root.child('requests').child($otherUid).child($uid).child('status').val() === 'accepted')"
+        }
+      }
+    },
+
+    "settings": {
+      "$uid": {
+        // Settings are private by default...
+        ".read": "auth != null && auth.uid === $uid",
+        ".write": "auth != null && auth.uid === $uid",
+        // ...except the two flags other users' clients need in order to
+        // respect this user's privacy choices before rendering anything.
+        "showOnlineStatus": { ".read": "auth != null" },
+        "showLastSeen": { ".read": "auth != null" }
+      }
+    },
+
+    // --- Below this line: conversations/chats/notifications/requests. ---
+
+    "conversations": {
+      "$conversationId": {
+        ".read": "auth != null && data.child('participants').child(auth.uid).exists()",
+        ".write": "auth != null && newData.exists() && (data.child('participants').child(auth.uid).exists() || newData.child('participants').child(auth.uid).exists())",
+        "participants": {
+          ".validate": "!data.exists() ? (newData.numChildren() === 2 && newData.child(auth.uid).val() === true) : newData.val() === data.val()"
+        }
+      }
+    },
+
+    // Denormalized "my conversations" index — participants is a map, and RTD
+    // can't efficiently query "does this map contain key X" across every
+    // conversation, so each participant gets their own flat, directly
+    // readable list instead. Both participants' entries are written
+    // together (from chats.js) whenever a conversation is created or a
+    // message is sent, so this always mirrors conversations/.
+    "userConversations": {
+      "$uid": {
+        ".read": "auth != null && auth.uid === $uid",
+        "$conversationId": {
+          ".write": "auth != null && root.child('conversations').child($conversationId).child('participants').child(auth.uid).exists() && root.child('conversations').child($conversationId).child('participants').child($uid).exists()"
+        }
+      }
+    },
+
+    "chats": {
+      "$conversationId": {
+        ".read": "auth != null && root.child('conversations').child($conversationId).child('participants').child(auth.uid).exists()",
+        "messages": {
+          ".indexOn": ["timestamp"],
+          "$messageId": {
+            ".write": "auth != null && newData.exists() && root.child('conversations').child($conversationId).child('participants').child(auth.uid).exists() && ((!data.exists() && newData.child('senderId').val() === auth.uid) || (data.exists() && (data.child('senderId').val() === auth.uid || data.child('receiverId').val() === auth.uid)))",
+            ".validate": "newData.hasChildren(['senderId', 'receiverId', 'type', 'timestamp']) && newData.child('type').val() === 'text' && newData.child('text').isString() && !newData.hasChildren(['fileUrl', 'fileName', 'fileSize', 'duration']) && (!data.exists() ? newData.child('senderId').val() === auth.uid : newData.child('senderId').val() === data.child('senderId').val() && newData.child('receiverId').val() === data.child('receiverId').val() && newData.child('type').val() === data.child('type').val() && newData.child('timestamp').val() === data.child('timestamp').val() && newData.child('text').val() === data.child('text').val())"
+          }
+        }
+      }
+    },
+
+    "notifications": {
+      "$uid": {
+        ".read": "auth != null && auth.uid === $uid",
+        "$notificationId": {
+          // Owner has full control (mark read, delete). Anyone else may only
+          // create a brand-new notification identifying themselves as the
+          // sender — never overwrite or delete another user's notification.
+          ".write": "auth != null && (auth.uid === $uid || (!data.exists() && newData.child('senderId').val() === auth.uid))"
+        }
+      }
+    },
+
+    "requests": {
+      "$uid": {
+        "$requesterUid": {
+          ".read": "auth != null && (auth.uid === $uid || auth.uid === $requesterUid)",
+          ".write": "auth != null && $uid !== $requesterUid && ((!data.exists() && newData.exists() && auth.uid === $requesterUid && newData.child('status').val() === 'pending') || (data.exists() && data.child('status').val() === 'pending' && newData.exists() && newData.child('status').val() === 'accepted' && auth.uid === $uid) || (data.exists() && data.child('status').val() === 'pending' && !newData.exists() && (auth.uid === $uid || auth.uid === $requesterUid)))",
+          ".validate": "newData.hasChildren(['status']) && (newData.child('status').val() === 'pending' || newData.child('status').val() === 'accepted')"
+        }
+      }
+    }
+  }
+}

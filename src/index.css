@@ -1,0 +1,68 @@
+@import "tailwindcss";
+
+/* Class-based instead of the v4 default (OS-preference-only) — Settings
+   offers an explicit System/Light/Dark choice, which needs a toggleable
+   class, not just a media query. Applied to AppShell's own root (see
+   AppShell.jsx), not <html>, so Login/Register keep their fixed light
+   design — they were never meant to be theme-aware. */
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+  --font-display: "Space Grotesk", ui-sans-serif, system-ui, sans-serif;
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+
+  /* Brand accent — used sparingly for actions, links, and the signature mark */
+  --color-signal: #ff6b4a;
+  --color-signal-dark: #e8532f;
+
+  /* Conventional green for online/presence indicators */
+  --color-pulse: #22c55e;
+
+  /* Background/text extremes, swapped below in dark mode */
+  --color-ink: #14121f;
+  --color-paper: #faf9fc;
+}
+
+/*
+ * Components consistently use bg-paper/text-ink plus Tailwind's built-in
+ * zinc/red scales for borders, secondary text, and error states — never
+ * arbitrary hex values. That means dark mode can live entirely here, as
+ * token overrides, instead of `dark:` classes scattered through every
+ * component. Only the shades actually used anywhere in src/ are listed
+ * (verified by grep) — this isn't a full palette override.
+ *
+ * Known trade-off: a handful of elements are intentionally dark
+ * regardless of theme (own-message chat bubbles, the full-screen
+ * camera/status-creation overlays) because they were designed against a
+ * single fixed palette. Under dark mode they invert along with
+ * everything else — still fully readable, just not pixel-identical to
+ * their light-mode design. Correcting that fully would mean giving those
+ * specific elements their own non-swapping tokens; deferred as polish.
+ */
+.dark {
+  --color-ink: #faf9fc;
+  --color-paper: #14121f;
+
+  --color-zinc-50: #1c1a28;
+  --color-zinc-100: #232030;
+  --color-zinc-200: #302c3f;
+  --color-zinc-300: #433e54;
+  --color-zinc-400: #8d87a0;
+  --color-zinc-500: #a29cb5;
+  --color-zinc-600: #bcb7ca;
+
+  --color-red-50: #2a1518;
+  --color-red-200: #5c2530;
+}
+
+html {
+  font-family: var(--font-sans);
+}
+
+body {
+  @apply bg-paper text-ink antialiased;
+}
+
+::selection {
+  @apply bg-signal/20;
+}
